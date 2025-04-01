@@ -1,98 +1,82 @@
-# 文件路径: .github/workflows/Obfuscate.yml
-name: BPB Panel Obfuscation (Optimized)
+# 文件名: .github/workflows/obfuscate.yml
+name: Basic Obfuscation Workflow
 
 on:
-  push:
-    branches: [ "main" ]
-  schedule:
-    - cron: "0 1 * * *"  # 每天 UTC 时间 01:00 执行
+  workflow_dispatch:  # 允许手动触发
 
 permissions:
-  contents: write
+  contents: write     # 必需的文件写入权限
 
 jobs:
-  obfuscate-worker:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # 限制最大执行时间
+    timeout-minutes: 5  # 缩短超时时间
 
     steps:
-      # ------------ 初始化步骤 ------------
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    # 步骤1: 检出代码
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false  # 避免权限冲突
 
-      # ------------ 环境优化 ------------
-      - name: Setup Node.js (LTS)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20.19.0"  # 指定精确版本确保稳定性
-          cache: "npm"
-          cache-dependency-path: "package-lock.json"
+    # 步骤2: 安装基础工具
+    - name: Setup Environment
+      run: |
+        sudo apt-get -qq update
+        sudo apt-get install -y wget
 
-      - name: Generate package.json
-        run: |
-          if [ ! -f package.json ]; then
-            echo '{"name": "github-actions-obfuscator"}' > package.json
-          fi
+    # 步骤3: 下载待混淆文件（带重试机制）
+    - name: Download Source File
+      run: |
+        max_retries=3
+        count=0
+        until wget -O ./origin.js \
+          "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js" \
+          || [ $count -eq $max_retries ]
+        do
+          sleep 2
+          ((count++))
+        done
 
-      - name: Install Dependencies (Cached)
-        run: npm install --package-lock javascript-obfuscator@4.0.0
+        # 文件存在性检查
+        if [ ! -f "./origin.js" ]; then
+          echo "::error::文件下载失败"
+          exit 1
+        fi
 
-      # ------------ 获取源码 ------------
-      - name: Download Source Code
-        run: |
-          wget --retry-connrefused --tries=3 --timeout=30 \
-            -O "${{ github.workspace }}/origin.js" \
-            https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js
+    # 步骤4: 全局安装混淆工具（避免项目依赖）
+    - name: Install Obfuscator Globally
+      run: npm install -g javascript-obfuscator@4.0.0
 
-      # ------------ 性能优化混淆配置 ------------
-      - name: Create Optimized Config
-        run: |
-          cat > obfs-config.json <<EOF
-          {
-            "compact": true,
-            "controlFlowFlattening": false,      # 禁用高消耗选项
-            "deadCodeInjection": false,          # 禁用死代码注入
-            "identifierNamesGenerator": "hexadecimal",
-            "renameGlobals": true,
-            "stringArray": true,
-            "stringArrayEncoding": "base64",     # 比 rc4 性能更好
-            "stringArrayThreshold": 0.75,        # 降低处理频率
-            "simplify": true,
-            "transformObjectKeys": false,        # 禁用对象键转换
-            "unicodeEscapeSequence": false        # 禁用 Unicode 转义
-          }
-          EOF
+    # 步骤5: 执行轻量级混淆
+    - name: Run Safe Obfuscation
+      run: |
+        javascript-obfuscator ./origin.js \
+          --output ./_worker.js \
+          --compact true \
+          --identifier-names-generator hexadecimal \
+          --rename-globals true \
+          --string-array true \
+          --string-array-threshold 0.5
 
-      # ------------ 执行混淆 ------------
-      - name: Run Obfuscation
-        run: |
-          echo "当前工作目录: $(pwd)"
-          ls -l
-          
-          # 增加内存分配
-          export NODE_OPTIONS="--max-old-space-size=4096"
-          
-          npx javascript-obfuscator \
-            --config obfs-config.json \
-            --output ${{ github.workspace }}/_worker.js \
-            ${{ github.workspace }}/origin.js
+        # 输出文件验证
+        if [ $(stat -c%s "./_worker.js") -lt 100 ]; then
+          echo "::error::混淆输出异常"
+          exit 1
+        fi
 
-          # 验证输出文件
-          if [ ! -s "${{ github.workspace }}/_worker.js" ]; then
-            echo "::error::混淆文件生成失败"
-            exit 1
-          fi
+    # 步骤6: 调试输出
+    - name: Debug Files
+      run: |
+        echo "当前目录结构:"
+        ls -lh
+        echo "混淆文件头信息:"
+        head -n 5 ./_worker.js
 
-      # ------------ 提交结果 ------------
-      - name: Commit Changes
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          branch: main
-          commit_message: ":lock: [Optimized] 自动更新混淆代码"
-          file_pattern: |
-            _worker.js
-            obfs-config.json
-          commit_user_name: "GitHub Actions Bot"
-          commit_user_email: "actions@github.com"
+    # 步骤7: 提交变更（兼容无变更场景）
+    - name: Commit Changes
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "chore: 自动更新混淆文件"
+        skip_fetch: true
+        file_pattern: _worker.js
