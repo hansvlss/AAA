@@ -1,82 +1,55 @@
-# 文件名: .github/workflows/obfuscate.yml
-name: Basic Obfuscation Workflow
+name: Build and Obfuscate BPB Panel
 
 on:
-  workflow_dispatch:  # 允许手动触发
+  push:
+    branches:
+      - main
+  schedule:
+    # 每天凌晨1:00运行
+    - cron: "0 1 * * *"
 
 permissions:
-  contents: write     # 必需的文件写入权限
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 5  # 缩短超时时间
 
     steps:
-    # 步骤1: 检出代码
-    - name: Checkout Code
-      uses: actions/checkout@v4
-      with:
-        persist-credentials: false  # 避免权限冲突
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-    # 步骤2: 安装基础工具
-    - name: Setup Environment
-      run: |
-        sudo apt-get -qq update
-        sudo apt-get install -y wget
+      - name: 设置 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: "latest"
 
-    # 步骤3: 下载待混淆文件（带重试机制）
-    - name: Download Source File
-      run: |
-        max_retries=3
-        count=0
-        until wget -O ./origin.js \
-          "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js" \
-          || [ $count -eq $max_retries ]
-        do
-          sleep 2
-          ((count++))
-        done
+      - name: 安装依赖项
+        run: |
+          npm install -g javascript-obfuscator
 
-        # 文件存在性检查
-        if [ ! -f "./origin.js" ]; then
-          echo "::error::文件下载失败"
-          exit 1
-        fi
+      - name: 下载 BPB worker.js
+        run: |
+          wget -O origin.js https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js
 
-    # 步骤4: 全局安装混淆工具（避免项目依赖）
-    - name: Install Obfuscator Globally
-      run: npm install -g javascript-obfuscator@4.0.0
+      - name: 混淆 BPB worker.js
+        run: |
+          javascript-obfuscator origin.js --output _worker.js \
+            --compact true \
+            --control-flow-flattening false \
+            --dead-code-injection false \
+            --identifier-names-generator mangled \
+            --rename-globals false \
+            --string-array true \
+            --string-array-encoding 'rc4' \
+            --string-array-threshold 0.75 \
+            --transform-object-keys true \
+            --unicode-escape-sequence true
 
-    # 步骤5: 执行轻量级混淆
-    - name: Run Safe Obfuscation
-      run: |
-        javascript-obfuscator ./origin.js \
-          --output ./_worker.js \
-          --compact true \
-          --identifier-names-generator hexadecimal \
-          --rename-globals true \
-          --string-array true \
-          --string-array-threshold 0.5
-
-        # 输出文件验证
-        if [ $(stat -c%s "./_worker.js") -lt 100 ]; then
-          echo "::error::混淆输出异常"
-          exit 1
-        fi
-
-    # 步骤6: 调试输出
-    - name: Debug Files
-      run: |
-        echo "当前目录结构:"
-        ls -lh
-        echo "混淆文件头信息:"
-        head -n 5 ./_worker.js
-
-    # 步骤7: 提交变更（兼容无变更场景）
-    - name: Commit Changes
-      uses: stefanzweifel/git-auto-commit-action@v5
-      with:
-        commit_message: "chore: 自动更新混淆文件"
-        skip_fetch: true
-        file_pattern: _worker.js
+      - name: 提交更改
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          branch: main
+          commit_message: ':arrow_up: 更新最新的 BPB 面板'
+          commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'
+          push_options: '--set-upstream'
