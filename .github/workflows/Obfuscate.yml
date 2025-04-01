@@ -1,68 +1,92 @@
-name: Build Obfuscate BPB Panel
+# 文件路径: .github/workflows/Obfuscate.yml
+name: BPB Panel Obfuscation
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   schedule:
-    - cron: "0 1 * * *"
+    - cron: "0 1 * * *"  # 每天 UTC 时间 01:00 执行
 
 permissions:
-  contents: write
+  contents: write  # 允许提交代码
 
 jobs:
-  build:
+  obfuscate-worker:
     runs-on: ubuntu-latest
 
     steps:
-      # ------------ 步骤 1: 初始化环境 ------------
-      - name: Check out code
+      # ------------ 初始化步骤 ------------
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整提交历史
 
-      - name: Install Node.js
+      # ------------ 环境准备 ------------
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
 
-      # ------------ 步骤 2: 安装混淆工具 ------------
-      - name: Setup Obfuscator
-        run: npm install -g javascript-obfuscator@4.0.0  # 固定版本避免兼容性问题‌:ml-citation{ref="4" data="citationList"}
+      - name: Install Obfuscator
+        run: npm install -g javascript-obfuscator@4.0.0 --silent
 
-      # ------------ 步骤 3: 获取原始代码 ------------
-      - name: Fetch source code
+      # ------------ 获取原始代码 ------------
+      - name: Download source
         run: |
-          wget -O origin.js \
-          https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js
+          wget --retry-connrefused --tries=3 \
+            -O "${{ github.workspace }}/origin.js" \
+            https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js
 
-      # ------------ 步骤 4: 优化混淆配置 ------------
-      - name: Generate config file
+      # ------------ 生成配置文件 (修复路径关键) ------------
+      - name: Create config file
         run: |
-          cat > obfs-config.json <<EOF
+          CONFIG_PATH="${{ github.workspace }}/obfs-config.json"
+          
+          # 生成配置文件
+          cat > $CONFIG_PATH <<EOF
           {
             "compact": true,
+            "controlFlowFlattening": false,  # 禁用高开销选项
+            "deadCodeInjection": false,
             "identifierNamesGenerator": "hexadecimal",
             "renameGlobals": true,
             "stringArray": true,
-            "stringArrayEncoding": "base64",  # 改用 base64 替代 rc4‌:ml-citation{ref="6" data="citationList"}
-            "stringArrayThreshold": 0.5,      # 降低字符串处理频率‌:ml-citation{ref="2" data="citationList"}
-            "selfDefending": false,           # 禁用自保护机制减少开销‌:ml-citation{ref="3" data="citationList"}
-            "simplify": true                  # 启用代码简化优化‌:ml-citation{ref="3" data="citationList"}
+            "stringArrayEncoding": "base64",
+            "stringArrayThreshold": 0.5,
+            "selfDefending": false,
+            "simplify": true
           }
           EOF
 
-      # ------------ 步骤 5: 执行混淆操作 ------------
+          # 验证配置文件
+          echo "配置文件路径: $(realpath $CONFIG_PATH)"
+          ls -l "$CONFIG_PATH"
+
+      # ------------ 混淆执行 ------------
       - name: Obfuscate code
         run: |
-          javascript-obfuscator origin.js \
-            --config obfs-config.json \
-            --output _worker.js
+          cd "${{ github.workspace }}"  # 强制切换工作目录
+          
+          echo "当前目录文件列表:"
+          ls -l
+          
+          # 执行混淆（使用绝对路径）
+          javascript-obfuscator ./origin.js \
+            --config "${{ github.workspace }}/obfs-config.json" \
+            --output ./_worker.js
 
-      # ------------ 步骤 6: 提交生成文件 ------------
-      - name: Commit artifacts
+          # 验证输出文件
+          [ -s "./_worker.js" ] || (echo "输出文件生成失败"; exit 1)
+
+      # ------------ 提交结果 ------------
+      - name: Commit obfuscated file
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           branch: main
-          commit_message: ":arrow_up: update optimized worker"
+          commit_message: ":lock: 自动更新混淆代码"
           file_pattern: |
             _worker.js
             obfs-config.json
+          commit_user_name: "GitHub Actions Bot"
+          commit_user_email: "actions@github.com"
