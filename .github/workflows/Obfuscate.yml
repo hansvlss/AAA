@@ -7,48 +7,69 @@ on:
 
 permissions:
   contents: write
+  deployments: write
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out the code
+      # ------------ 步骤 1: 检出代码与初始化环境 ------------
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "latest"
+          node-version: "20"
 
       - name: Install dependencies
         run: npm install
 
-      - name: Build project
-        run: npx wrangler deploy src/worker.js --name bpb-worker-panel --compatibility-flag [nodejs_compat] --compatibility-date 2025-01-18 --dry-run --minify --outdir=dist
-          
-      - name: Minify JS
+      # ------------ 步骤 2: 构建 Worker 并压缩代码 ------------
+      - name: Build Worker (Dry Run)
+        run: |
+          npx wrangler deploy src/worker.js \
+            --name bpb-worker-panel \
+            --compatibility-flag nodejs_compat \
+            --compatibility-date 2025-01-18 \
+            --minify \
+            --outdir=dist \
+            --dry-run
+
+      - name: Minify JS with Terser
         run: npx terser dist/worker.js --output dist/_worker.js --comments false
-      
+
       - name: Organize build files
         run: |
           mkdir -p build
           cp -f dist/_worker.js build/unobfuscated-worker.js
           zip -j build/unobfuscated-worker.zip dist/_worker.js
 
+      # ------------ 步骤 3: 混淆代码 ------------
       - name: Obfuscate JS
         run: |
           npx javascript-obfuscator --config ./obfs-config.json dist/_worker.js --output _worker.js
           cp -f _worker.js build/worker.js
           zip -j build/worker.zip _worker.js
 
-      - name: Commit and push built worker
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add _worker.js
-          git add -f build/
-          git commit -m "Automated build: update _worker.js"
-          git push
+      # ------------ 步骤 4: 提交生成的文件到仓库 ------------
+      - name: Commit build artifacts
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          branch: dev
+          commit_message: "chore: Auto-update worker build files"
+          file_pattern: |
+            _worker.js
+            build/*
+          force: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------ 步骤 5: 部署到 Cloudflare Workers ------------
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@3.0.0
+        with:
+          command: publish
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: dist
