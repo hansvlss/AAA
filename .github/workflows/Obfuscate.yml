@@ -1,75 +1,68 @@
-name: Build and Deploy Worker
+name: Build Obfuscate BPB Panel
 
 on:
   push:
     branches:
-      - dev
+      - main
+  schedule:
+    - cron: "0 1 * * *"
 
 permissions:
   contents: write
-  deployments: write
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      # ------------ 步骤 1: 检出代码与初始化环境 ------------
-      - name: Checkout code
+      # ------------ 步骤 1: 初始化环境 ------------
+      - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install dependencies
-        run: npm install
+      # ------------ 步骤 2: 安装混淆工具 ------------
+      - name: Setup Obfuscator
+        run: npm install -g javascript-obfuscator@4.0.0  # 固定版本避免兼容性问题‌:ml-citation{ref="4" data="citationList"}
 
-      # ------------ 步骤 2: 构建 Worker 并压缩代码 ------------
-      - name: Build Worker (Dry Run)
+      # ------------ 步骤 3: 获取原始代码 ------------
+      - name: Fetch source code
         run: |
-          npx wrangler deploy src/worker.js \
-            --name bpb-worker-panel \
-            --compatibility-flag nodejs_compat \
-            --compatibility-date 2025-01-18 \
-            --minify \
-            --outdir=dist \
-            --dry-run
+          wget -O origin.js \
+          https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js
 
-      - name: Minify JS with Terser
-        run: npx terser dist/worker.js --output dist/_worker.js --comments false
-
-      - name: Organize build files
+      # ------------ 步骤 4: 优化混淆配置 ------------
+      - name: Generate config file
         run: |
-          mkdir -p build
-          cp -f dist/_worker.js build/unobfuscated-worker.js
-          zip -j build/unobfuscated-worker.zip dist/_worker.js
+          cat > obfs-config.json <<EOF
+          {
+            "compact": true,
+            "identifierNamesGenerator": "hexadecimal",
+            "renameGlobals": true,
+            "stringArray": true,
+            "stringArrayEncoding": "base64",  # 改用 base64 替代 rc4‌:ml-citation{ref="6" data="citationList"}
+            "stringArrayThreshold": 0.5,      # 降低字符串处理频率‌:ml-citation{ref="2" data="citationList"}
+            "selfDefending": false,           # 禁用自保护机制减少开销‌:ml-citation{ref="3" data="citationList"}
+            "simplify": true                  # 启用代码简化优化‌:ml-citation{ref="3" data="citationList"}
+          }
+          EOF
 
-      # ------------ 步骤 3: 混淆代码 ------------
-      - name: Obfuscate JS
+      # ------------ 步骤 5: 执行混淆操作 ------------
+      - name: Obfuscate code
         run: |
-          npx javascript-obfuscator --config ./obfs-config.json dist/_worker.js --output _worker.js
-          cp -f _worker.js build/worker.js
-          zip -j build/worker.zip _worker.js
+          javascript-obfuscator origin.js \
+            --config obfs-config.json \
+            --output _worker.js
 
-      # ------------ 步骤 4: 提交生成的文件到仓库 ------------
-      - name: Commit build artifacts
+      # ------------ 步骤 6: 提交生成文件 ------------
+      - name: Commit artifacts
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          branch: dev
-          commit_message: "chore: Auto-update worker build files"
+          branch: main
+          commit_message: ":arrow_up: update optimized worker"
           file_pattern: |
             _worker.js
-            build/*
-          force: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # ------------ 步骤 5: 部署到 Cloudflare Workers ------------
-      - name: Deploy to Cloudflare
-        uses: cloudflare/wrangler-action@3.0.0
-        with:
-          command: publish
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          workingDirectory: dist
+            obfs-config.json
